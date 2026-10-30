@@ -1,1 +1,975 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Super HTML Bros</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #000;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    font-family: 'Courier New', monospace;
+    color: white;
+    flex-direction: column;
+  }
+  canvas {
+    border: 4px solid #fff;
+    background: #5c94fc;
+    image-rendering: pixelated;
+    max-width: 100%;
+  }
+  .info {
+    margin-top: 10px;
+    text-align: center;
+    color: #ccc;
+    font-size: 14px;
+  }
+  h1 { color: #ffcc00; margin-bottom: 10px; text-shadow: 2px 2px #c00; }
+</style>
+</head>
+<body>
+<h1>🍄 SUPER HTML BROS 🍄</h1>
+<canvas id="game" width="800" height="480"></canvas>
+<div class="info">
+  <strong>Controles:</strong> ← → ou A/D (mover) | ↑ ou W ou ESPAÇO (pular) | R (reiniciar fase)
+</div>
 
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+const TILE = 32;
+
+// ============ ESTADO DO JOGO ============
+let gameState = 'menu'; // menu, playing, gameover, win, levelComplete
+let currentLevel = 0;
+let score = 0;
+let lives = 3;
+let coins = 0;
+let time = 300;
+let lastTime = 0;
+let timeAccum = 0;
+
+// ============ INPUT ============
+const keys = {};
+document.addEventListener('keydown', e => {
+  keys[e.key.toLowerCase()] = true;
+  if (gameState === 'menu' && (e.key === 'Enter' || e.key === ' ')) startGame();
+  if (gameState === 'gameover' && e.key === 'Enter') resetGame();
+  if (gameState === 'win' && e.key === 'Enter') resetGame();
+  if (gameState === 'levelComplete' && e.key === 'Enter') nextLevel();
+  if (gameState === 'playing' && e.key.toLowerCase() === 'r') loadLevel(currentLevel);
+});
+document.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+
+// ============ JOGADOR ============
+const player = {
+  x: 50, y: 300, w: 28, h: 32,
+  vx: 0, vy: 0,
+  speed: 4, jumpPower: 11,
+  onGround: false,
+  facing: 1,
+  invincible: 0,
+  animFrame: 0,
+  animTimer: 0
+};
+
+// ============ NÍVEIS ============
+// Legenda: . = vazio, # = chão, B = tijolo, ? = bloco surpresa, 
+// C = moeda, P = cano, G = goomba, K = koopa, F = bandeira (final)
+const levelData = [
+  // FASE 1 - Introdução
+  [
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "......................C.C.C.....................................................................",
+    ".....................BBBBB..............................C.C.C...................................",
+    "................................................................................................",
+    "..........C.C...................................................................................",
+    ".........B?B?B.........................PP..........BBBBBBB.....................................F",
+    ".....................................PPPPPP....................................................",
+    "...................................PPPPPPPP....................................................",
+    "####......####....####......####...................................####....####....####....####",
+    "####......####....####......####...................................####....####....####....####",
+    "####..G...####.G..####..G...####...G..........G.......G....G......####....####....####....####",
+  ],
+  // FASE 2 - Pular buracos
+  [
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "..........C.C.C.C.C.C.C.........................................................................",
+    "..........BBBBBBBBBBB...........................................................................",
+    "................................................................................................",
+    ".......................C.C.C.C..................................................................",
+    "......................BBBBBBBB..................................................................",
+    "................................................................................................",
+    "...........................PP..........................PP......................................F",
+    "..........................PPPP.........................PPPP.....................................",
+    "####..####......####....................####......####.........................................",
+    "####..####......####....................####......####.........................................",
+    "####..####..G...####..G...####..G..G....####..G...####..G......................................",
+  ],
+  // FASE 3 - Canos altos
+  [
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "...........................................C.C.C................................................",
+    "..........................................BBBBBB................................................",
+    "................................................................................................",
+    "......................C.C.C................................C.C.C................................",
+    ".....................BBBBBBB..............................BBBBBBB...............................",
+    "................................................................................................",
+    ".........PP..........................PP..........................PP............................F",
+    "........PPPP.........................PPPP.........................PPPP..........................",
+    ".......PPPPPP.......................PPPPPP.......................PPPPPP.........................",
+    "####....................####............................####....................####............",
+    "####....................####............................####....................####............",
+    "####..G.................####..G.........................####..G.................####..G.........",
+  ],
+  // FASE 4 - Plataformas flutuantes
+  [
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "..........C.C...................................................................................",
+    ".........BBBBB..................C.C.C...........................................................",
+    "...............................BBBBBBB..........................................................",
+    "................................................................................................",
+    "................C.C.C................................C.C.C......................................",
+    "...............BBBBBBB..............................BBBBBBB.....................................",
+    "................................................................................................",
+    "................................................................................................",
+    "####........................####........................####........................####.......F",
+    "####........................####........................####........................####.......F",
+    "####..G...G.................####..G...G.................####..G...G.................####..G....",
+  ],
+  // FASE 5 - Fase subterrânea
+  [
+    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "B..............................................................................................B",
+    "B..............................................................................................B",
+    "B..............................................................................................B",
+    "B..............................................................................................B",
+    "B.......C.C.C.C.C..............................................................................B",
+    "B.......BBBBBBBBB..............................................................................B",
+    "B..............................................................................................B",
+    "B....................C.C.C.C.C.C...............................................................B",
+    "B....................BBBBBBBBBBBBB.............................................................B",
+    "B..............................................................................................B",
+    "B..............................................................C.C.C...........................B",
+    "B..............................................................BBBBB......................F....B",
+    "B..............................................................BBBBB......................F....B",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+  ],
+  // FASE 6 - Escalada
+  [
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "..............................................C.C.C............................................",
+    ".............................................BBBBBBB...........................................",
+    "..........................C.C.C................................................................",
+    ".........................BBBBBBB...............................................................",
+    ".......C.C.C...................................................................................",
+    "......BBBBBBB..................................................................................",
+    "####...........................................................................................F",
+    "####..G..G..G..G..G..G..G..G..G..G..G..G..G..G..G..G..G..G..G..G..G..G..G..G..G..G..G..G..G..",
+  ],
+  // FASE 7 - Muitos inimigos
+  [
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "..........C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "####...........................................................................................F",
+    "####...........................................................................................F",
+    "####.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.G.",
+  ],
+  // FASE 8 - Labirinto vertical
+  [
+    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "B..............................................................................................B",
+    "B...C.C.C......................................................................................B",
+    "B...BBBBB......................................................................................B",
+    "B..............................................................................................B",
+    "B......................C.C.C...................................................................B",
+    "B.....................BBBBBBB..................................................................B",
+    "B..............................................................................................B",
+    "B.........................................C.C.C................................................B",
+    "B........................................BBBBBBB...............................................B",
+    "B..............................................................................................B",
+    "B..............................................................C.C.C...........................B",
+    "B.............................................................BBBBBBB..........................B",
+    "B.........................................................................................F....B",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+  ],
+  // FASE 9 - Desafio final
+  [
+    "................................................................................................",
+    "................................................................................................",
+    "................................................................................................",
+    "..........C.C.C.................................................................................",
+    ".........BBBBBBB................................................................................",
+    "................................................................................................",
+    "....................C.C.C.C.C.C................................................................",
+    "...................BBBBBBBBBBBB.................................................................",
+    "................................................................................................",
+    "....................................C.C.C.C.C.C................................................",
+    "...................................BBBBBBBBBBBB................................................",
+    "................................................................................................",
+    "####..........####..........####..........####..........####..........####..........####........F",
+    "####..........####..........####..........####..........####..........####..........####........F",
+    "####..G..G....####..G..G....####..G..G....####..G..G....####..G..G....####..G..G....####..G..G.",
+  ],
+  // FASE 10 - Castelo final
+  [
+    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "B..............................................................................................B",
+    "B..C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.C.B",
+    "B..............................................................................................B",
+    "B..............................................................................................B",
+    "B..............................................................................................B",
+    "B..............................................................................................B",
+    "B..............................................................................................B",
+    "B..............................................................................................B",
+    "B..............................................................................................B",
+    "B..............................................................................................B",
+    "B..............................................................................................B",
+    "B.........................................................................................F....B",
+    "B.........................................................................................F....B",
+    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+  ]
+];
+
+// ============ ENTIDADES ============
+let tiles = [];
+let enemies = [];
+let coinEntities = [];
+let particles = [];
+let flag = null;
+
+function loadLevel(idx) {
+  tiles = [];
+  enemies = [];
+  coinEntities = [];
+  particles = [];
+  flag = null;
+  
+  const data = levelData[idx];
+  for (let y = 0; y < data.length; y++) {
+    tiles[y] = [];
+    for (let x = 0; x < data[y].length; x++) {
+      const c = data[y][x];
+      tiles[y][x] = { type: '.', hit: false };
+      
+      if (c === '#') tiles[y][x].type = '#';
+      else if (c === 'B') tiles[y][x].type = 'B';
+      else if (c === '?') tiles[y][x].type = '?';
+      else if (c === 'C') coinEntities.push({ x: x*TILE+8, y: y*TILE+8, w: 16, h: 16, collected: false, anim: 0 });
+      else if (c === 'P') tiles[y][x].type = 'P';
+      else if (c === 'G') enemies.push({ type: 'goomba', x: x*TILE, y: y*TILE, w: 28, h: 28, vx: -1, vy: 0, alive: true, anim: 0 });
+      else if (c === 'K') enemies.push({ type: 'koopa', x: x*TILE, y: y*TILE-8, w: 28, h: 36, vx: -1.2, vy: 0, alive: true, anim: 0 });
+      else if (c === 'F') {
+        if (!flag) flag = { x: x*TILE, y: y*TILE - TILE*3, w: 8, h: TILE*4 };
+      }
+    }
+  }
+  
+  // Posição inicial do jogador
+  player.x = 50;
+  player.y = 100;
+  player.vx = 0;
+  player.vy = 0;
+  player.onGround = false;
+  player.invincible = 0;
+  
+  time = 300;
+  timeAccum = 0;
+}
+
+// ============ FÍSICA ============
+function isSolid(tx, ty) {
+  if (ty < 0 || ty >= tiles.length) return false;
+  if (tx < 0 || !tiles[ty]) return false;
+  if (tx >= tiles[ty].length) return false;
+  const t = tiles[ty][tx].type;
+  return t === '#' || t === 'B' || t === '?' || t === 'P';
+}
+
+function collideWithTiles(entity) {
+  // Eixo X
+  entity.x += entity.vx;
+  const left = Math.floor(entity.x / TILE);
+  const right = Math.floor((entity.x + entity.w - 1) / TILE);
+  const top = Math.floor(entity.y / TILE);
+  const bottom = Math.floor((entity.y + entity.h - 1) / TILE);
+  
+  for (let ty = top; ty <= bottom; ty++) {
+    for (let tx = left; tx <= right; tx++) {
+      if (isSolid(tx, ty)) {
+        if (entity.vx > 0) {
+          entity.x = tx * TILE - entity.w;
+        } else if (entity.vx < 0) {
+          entity.x = (tx + 1) * TILE;
+        }
+        entity.vx = 0;
+        if (entity.bounceOnWall) entity.vx = -entity.bounceOnWall;
+      }
+    }
+  }
+  
+  // Eixo Y
+  entity.y += entity.vy;
+  const left2 = Math.floor(entity.x / TILE);
+  const right2 = Math.floor((entity.x + entity.w - 1) / TILE);
+  const top2 = Math.floor(entity.y / TILE);
+  const bottom2 = Math.floor((entity.y + entity.h - 1) / TILE);
+  
+  entity.onGround = false;
+  for (let ty = top2; ty <= bottom2; ty++) {
+    for (let tx = left2; tx <= right2; tx++) {
+      if (isSolid(tx, ty)) {
+        if (entity.vy > 0) {
+          entity.y = ty * TILE - entity.h;
+          entity.onGround = true;
+        } else if (entity.vy < 0) {
+          entity.y = (ty + 1) * TILE;
+          // Bateu bloco de cima
+          if (entity === player) hitBlock(tx, ty);
+        }
+        entity.vy = 0;
+      }
+    }
+  }
+}
+
+function hitBlock(tx, ty) {
+  const tile = tiles[ty][tx];
+  if (!tile) return;
+  if (tile.type === '?' && !tile.hit) {
+    tile.hit = true;
+    tile.type = 'B';
+    coins++;
+    score += 100;
+    // Partícula de moeda
+    particles.push({
+      x: tx*TILE+8, y: ty*TILE-16,
+      vx: 0, vy: -5,
+      life: 30,
+      type: 'coin'
+    });
+  } else if (tile.type === 'B') {
+    // Animação de "bump"
+    particles.push({
+      x: tx*TILE, y: ty*TILE,
+      vx: 0, vy: 0,
+      life: 8,
+      type: 'bump',
+      tx: tx, ty: ty
+    });
+  }
+}
+
+// ============ ATUALIZAÇÃO ============
+function update(dt) {
+  if (gameState !== 'playing') return;
+  
+  // Timer
+  timeAccum += dt;
+  if (timeAccum >= 1) {
+    timeAccum = 0;
+    time--;
+    if (time <= 0) {
+      playerDie();
+    }
+  }
+  
+  // Controles do jogador
+  let moveX = 0;
+  if (keys['arrowleft'] || keys['a']) moveX = -1;
+  if (keys['arrowright'] || keys['d']) moveX = 1;
+  
+  player.vx = moveX * player.speed;
+  if (moveX !== 0) player.facing = moveX;
+  
+  // Pulo
+  if ((keys['arrowup'] || keys['w'] || keys[' ']) && player.onGround) {
+    player.vy = -player.jumpPower;
+    player.onGround = false;
+  }
+  
+  // Gravidade
+  player.vy += 0.5;
+  if (player.vy > 12) player.vy = 12;
+  
+  collideWithTiles(player);
+  
+  // Animação
+  if (Math.abs(player.vx) > 0.1 && player.onGround) {
+    player.animTimer += dt;
+    if (player.animTimer > 0.1) {
+      player.animTimer = 0;
+      player.animFrame = (player.animFrame + 1) % 3;
+    }
+  } else {
+    player.animFrame = 0;
+  }
+  
+  // Invencibilidade
+  if (player.invincible > 0) player.invincible -= dt;
+  
+  // Cair no buraco
+  if (player.y > H + 100) {
+    playerDie();
+  }
+  
+  // Atualizar inimigos
+  for (const e of enemies) {
+    if (!e.alive) continue;
+    
+    e.vy += 0.5;
+    if (e.vy > 12) e.vy = 12;
+    
+    const oldVx = e.vx;
+    e.bounceOnWall = -e.vx;
+    collideWithTiles(e);
+    if (e.vx === 0 && oldVx !== 0) {
+      e.vx = -oldVx;
+    }
+    
+    // Caiu no buraco
+    if (e.y > H + 100) e.alive = false;
+    
+    // Animação
+    e.anim += dt;
+    
+    // Colisão com jogador
+    if (player.invincible <= 0 && rectsOverlap(player, e)) {
+      // Pulo em cima
+      if (player.vy > 0 && player.y + player.h - e.y < 16) {
+        e.alive = false;
+        player.vy = -8;
+        score += 200;
+        // Partícula
+        for (let i = 0; i < 5; i++) {
+          particles.push({
+            x: e.x + e.w/2, y: e.y + e.h/2,
+            vx: (Math.random()-0.5)*4, vy: -Math.random()*4,
+            life: 30, type: 'dust'
+          });
+        }
+      } else {
+        playerHit();
+      }
+    }
+  }
+  
+  // Moedas
+  for (const c of coinEntities) {
+    if (c.collected) continue;
+    c.anim += dt;
+    if (rectsOverlap(player, c)) {
+      c.collected = true;
+      coins++;
+      score += 100;
+      if (coins >= 100) {
+        coins = 0;
+        lives++;
+      }
+    }
+  }
+  
+  // Partículas
+  for (const p of particles) {
+    p.x += p.vx;
+    p.y += p.vy;
+    if (p.type === 'dust' || p.type === 'coin') p.vy += 0.3;
+    p.life--;
+  }
+  particles = particles.filter(p => p.life > 0);
+  
+  // Bandeira (final da fase)
+  if (flag && rectsOverlap(player, flag)) {
+    gameState = 'levelComplete';
+    score += time * 10;
+  }
+}
+
+function playerHit() {
+  if (player.invincible > 0) return;
+  lives--;
+  if (lives <= 0) {
+    gameState = 'gameover';
+  } else {
+    player.invincible = 2;
+    player.x = 50;
+    player.y = 100;
+    player.vx = 0;
+    player.vy = 0;
+  }
+}
+
+function playerDie() {
+  lives--;
+  if (lives <= 0) {
+    gameState = 'gameover';
+  } else {
+    loadLevel(currentLevel);
+  }
+}
+
+function rectsOverlap(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x &&
+         a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+// ============ RENDERIZAÇÃO ============
+function draw() {
+  // Céu
+  const gradient = ctx.createLinearGradient(0, 0, 0, H);
+  gradient.addColorStop(0, '#5c94fc');
+  gradient.addColorStop(1, '#8bb8ff');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, W, H);
+  
+  // Nuvens de fundo
+  drawClouds();
+  
+  if (gameState === 'menu') {
+    drawMenu();
+    return;
+  }
+  if (gameState === 'gameover') {
+    drawGameOver();
+    return;
+  }
+  if (gameState === 'win') {
+    drawWin();
+    return;
+  }
+  if (gameState === 'levelComplete') {
+    drawLevelComplete();
+    return;
+  }
+  
+  // Tiles
+  for (let y = 0; y < tiles.length; y++) {
+    for (let x = 0; x < tiles[y].length; x++) {
+      const t = tiles[y][x];
+      const px = x * TILE, py = y * TILE;
+      
+      if (t.type === '#') drawGround(px, py);
+      else if (t.type === 'B') drawBrick(px, py);
+      else if (t.type === '?') drawQuestion(px, py);
+      else if (t.type === 'P') drawPipe(px, py, x, y);
+    }
+  }
+  
+  // Moedas
+  for (const c of coinEntities) {
+    if (c.collected) continue;
+    drawCoin(c.x, c.y, c.anim);
+  }
+  
+  // Bandeira
+  if (flag) {
+    ctx.fillStyle = '#666';
+    ctx.fillRect(flag.x, flag.y, 4, flag.h);
+    ctx.fillStyle = '#ff0';
+    ctx.beginPath();
+    ctx.moveTo(flag.x + 4, flag.y + 4);
+    ctx.lineTo(flag.x + 24, flag.y + 12);
+    ctx.lineTo(flag.x + 4, flag.y + 20);
+    ctx.fill();
+  }
+  
+  // Inimigos
+  for (const e of enemies) {
+    if (!e.alive) continue;
+    if (e.type === 'goomba') drawGoomba(e);
+    else if (e.type === 'koopa') drawKoopa(e);
+  }
+  
+  // Jogador
+  if (player.invincible <= 0 || Math.floor(player.invincible * 10) % 2 === 0) {
+    drawPlayer();
+  }
+  
+  // Partículas
+  for (const p of particles) {
+    if (p.type === 'coin') {
+      ctx.fillStyle = '#ffcc00';
+      ctx.fillRect(p.x, p.y, 12, 12);
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(p.x+2, p.y+2, 4, 4);
+    } else if (p.type === 'dust') {
+      ctx.fillStyle = 'rgba(255,255,255,0.8)';
+      ctx.fillRect(p.x, p.y, 4, 4);
+    }
+  }
+  
+  // HUD
+  drawHUD();
+}
+
+function drawClouds() {
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  for (let i = 0; i < 5; i++) {
+    const x = (i * 200 + Date.now() * 0.01) % (W + 100) - 50;
+    const y = 50 + (i % 2) * 30;
+    ctx.beginPath();
+    ctx.arc(x, y, 20, 0, Math.PI*2);
+    ctx.arc(x+20, y, 25, 0, Math.PI*2);
+    ctx.arc(x+40, y, 20, 0, Math.PI*2);
+    ctx.fill();
+  }
+}
+
+function drawGround(x, y) {
+  ctx.fillStyle = '#c84c0c';
+  ctx.fillRect(x, y, TILE, TILE);
+  ctx.fillStyle = '#e09050';
+  ctx.fillRect(x+2, y+2, TILE-4, 4);
+  ctx.fillStyle = '#8c2800';
+  ctx.fillRect(x, y+TILE-4, TILE, 4);
+  // Textura
+  ctx.fillStyle = '#8c2800';
+  ctx.fillRect(x+8, y+12, 2, 8);
+  ctx.fillRect(x+20, y+16, 2, 8);
+}
+
+function drawBrick(x, y) {
+  ctx.fillStyle = '#c84c0c';
+  ctx.fillRect(x, y, TILE, TILE);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(x, y, TILE, 2);
+  ctx.fillRect(x, y+TILE-2, TILE, 2);
+  ctx.fillRect(x, y, 2, TILE);
+  ctx.fillRect(x+TILE-2, y, 2, TILE);
+  ctx.fillRect(x+TILE/2-1, y, 2, TILE);
+  ctx.fillRect(x, y+TILE/2-1, TILE, 2);
+}
+
+function drawQuestion(x, y) {
+  ctx.fillStyle = '#e09050';
+  ctx.fillRect(x, y, TILE, TILE);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(x, y, TILE, 2);
+  ctx.fillRect(x, y+TILE-2, TILE, 2);
+  ctx.fillRect(x, y, 2, TILE);
+  ctx.fillRect(x+TILE-2, y, 2, TILE);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 20px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('?', x+TILE/2, y+TILE-8);
+}
+
+function drawPipe(x, y, tx, ty) {
+  // Verifica se é topo do cano
+  const isTop = ty === 0 || !isPipeAt(tx, ty-1);
+  if (isTop) {
+    ctx.fillStyle = '#00a800';
+    ctx.fillRect(x-2, y, TILE+4, TILE);
+    ctx.fillStyle = '#00d800';
+    ctx.fillRect(x, y+2, TILE, 4);
+    ctx.fillStyle = '#004000';
+    ctx.fillRect(x-2, y, TILE+4, 2);
+    ctx.fillRect(x-2, y+TILE-2, TILE+4, 2);
+  } else {
+    ctx.fillStyle = '#00a800';
+    ctx.fillRect(x, y, TILE, TILE);
+    ctx.fillStyle = '#00d800';
+    ctx.fillRect(x+4, y, 6, TILE);
+    ctx.fillStyle = '#004000';
+    ctx.fillRect(x, y, 2, TILE);
+    ctx.fillRect(x+TILE-2, y, 2, TILE);
+  }
+}
+
+function isPipeAt(tx, ty) {
+  if (ty < 0 || ty >= tiles.length) return false;
+  if (tx < 0 || !tiles[ty] || tx >= tiles[ty].length) return false;
+  return tiles[ty][tx].type === 'P';
+}
+
+function drawCoin(x, y, anim) {
+  const wobble = Math.sin(anim * 5) * 2;
+  ctx.fillStyle = '#ffcc00';
+  ctx.beginPath();
+  ctx.ellipse(x+8, y+8+wobble, 6, 8, 0, 0, Math.PI*2);
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(x+6, y+4+wobble, 2, 8);
+}
+
+function drawGoomba(e) {
+  // Corpo
+  ctx.fillStyle = '#a04000';
+  ctx.fillRect(e.x+4, e.y+8, 20, 16);
+  // Cabeça
+  ctx.fillStyle = '#c06020';
+  ctx.beginPath();
+  ctx.arc(e.x+14, e.y+10, 12, 0, Math.PI*2);
+  ctx.fill();
+  // Olhos
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(e.x+8, e.y+8, 4, 6);
+  ctx.fillRect(e.x+16, e.y+8, 4, 6);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(e.x+9, e.y+10, 2, 3);
+  ctx.fillRect(e.x+17, e.y+10, 2, 3);
+  // Pés
+  ctx.fillStyle = '#000';
+  const footOffset = Math.floor(e.anim * 5) % 2 === 0 ? 0 : 2;
+  ctx.fillRect(e.x+2, e.y+22+footOffset, 8, 6);
+  ctx.fillRect(e.x+18, e.y+22-footOffset+2, 8, 6);
+}
+
+function drawKoopa(e) {
+  // Casco
+  ctx.fillStyle = '#00a800';
+  ctx.fillRect(e.x+4, e.y+12, 20, 20);
+  ctx.fillStyle = '#00d800';
+  ctx.fillRect(e.x+8, e.y+16, 12, 12);
+  // Cabeça
+  ctx.fillStyle = '#ffcc00';
+  ctx.beginPath();
+  ctx.arc(e.x+14, e.y+10, 8, 0, Math.PI*2);
+  ctx.fill();
+  // Olhos
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(e.x+10, e.y+8, 3, 4);
+  ctx.fillRect(e.x+15, e.y+8, 3, 4);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(e.x+11, e.y+9, 1, 2);
+  ctx.fillRect(e.x+16, e.y+9, 1, 2);
+}
+
+function drawPlayer() {
+  const x = player.x, y = player.y;
+  const f = player.facing;
+  
+  // Chapéu
+  ctx.fillStyle = '#e00000';
+  ctx.fillRect(x+4, y, 20, 6);
+  ctx.fillRect(x+2, y+4, 24, 4);
+  
+  // Rosto
+  ctx.fillStyle = '#ffcc99';
+  ctx.fillRect(x+6, y+8, 16, 10);
+  
+  // Bigode
+  ctx.fillStyle = '#000';
+  ctx.fillRect(x+8, y+14, 12, 2);
+  
+  // Olhos
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(x+10, y+10, 3, 3);
+  ctx.fillRect(x+16, y+10, 3, 3);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(x+11, y+11, 1, 1);
+  ctx.fillRect(x+17, y+11, 1, 1);
+  
+  // Corpo (macacão)
+  ctx.fillStyle = '#0000c0';
+  ctx.fillRect(x+4, y+18, 20, 10);
+  
+  // Braços
+  ctx.fillStyle = '#e00000';
+  if (!player.onGround) {
+    ctx.fillRect(x, y+18, 4, 8);
+    ctx.fillRect(x+24, y+18, 4, 8);
+  } else {
+    ctx.fillRect(x, y+20, 4, 8);
+    ctx.fillRect(x+24, y+20, 4, 8);
+  }
+  
+  // Pernas
+  ctx.fillStyle = '#0000c0';
+  if (player.onGround && Math.abs(player.vx) > 0.1) {
+    const legOffset = player.animFrame;
+    if (legOffset === 0) {
+      ctx.fillRect(x+4, y+28, 8, 4);
+      ctx.fillRect(x+16, y+28, 8, 4);
+    } else if (legOffset === 1) {
+      ctx.fillRect(x+2, y+28, 8, 4);
+      ctx.fillRect(x+18, y+28, 8, 4);
+    } else {
+      ctx.fillRect(x+6, y+28, 8, 4);
+      ctx.fillRect(x+14, y+28, 8, 4);
+    }
+  } else {
+    ctx.fillRect(x+4, y+28, 8, 4);
+    ctx.fillRect(x+16, y+28, 8, 4);
+  }
+}
+
+function drawHUD() {
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillRect(0, 0, W, 36);
+  
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 18px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText(`FASE ${currentLevel+1}-1`, 20, 24);
+  ctx.fillText(`💰 ${coins.toString().padStart(2,'0')}`, 180, 24);
+  ctx.fillText(`⭐ ${score.toString().padStart(6,'0')}`, 300, 24);
+  ctx.fillText(`❤️ x${lives}`, 480, 24);
+  ctx.fillText(`⏱️ ${time}`, 620, 24);
+}
+
+function drawMenu() {
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  ctx.fillRect(0, 0, W, H);
+  
+  ctx.fillStyle = '#ffcc00';
+  ctx.font = 'bold 60px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('SUPER HTML BROS', W/2, H/2 - 80);
+  
+  ctx.fillStyle = '#fff';
+  ctx.font = '24px monospace';
+  ctx.fillText('10 FASES DE AVENTURA!', W/2, H/2 - 20);
+  
+  ctx.fillStyle = '#ffcc00';
+  ctx.font = '20px monospace';
+  const blink = Math.floor(Date.now() / 500) % 2;
+  if (blink) ctx.fillText('PRESSIONE ENTER PARA COMEÇAR', W/2, H/2 + 40);
+  
+  ctx.fillStyle = '#aaa';
+  ctx.font = '16px monospace';
+  ctx.fillText('← → ou A/D: Mover', W/2, H/2 + 100);
+  ctx.fillText('↑ ou W ou ESPAÇO: Pular', W/2, H/2 + 125);
+  ctx.fillText('Pule nos inimigos para derrotá-los!', W/2, H/2 + 150);
+}
+
+function drawGameOver() {
+  ctx.fillStyle = 'rgba(0,0,0,0.8)';
+  ctx.fillRect(0, 0, W, H);
+  
+  ctx.fillStyle = '#ff0000';
+  ctx.font = 'bold 80px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('GAME OVER', W/2, H/2 - 20);
+  
+  ctx.fillStyle = '#fff';
+  ctx.font = '24px monospace';
+  ctx.fillText(`Pontuação Final: ${score}`, W/2, H/2 + 30);
+  
+  ctx.fillStyle = '#ffcc00';
+  ctx.font = '20px monospace';
+  const blink = Math.floor(Date.now() / 500) % 2;
+  if (blink) ctx.fillText('PRESSIONE ENTER PARA RECOMEÇAR', W/2, H/2 + 80);
+}
+
+function drawWin() {
+  ctx.fillStyle = 'rgba(0,0,0,0.8)';
+  ctx.fillRect(0, 0, W, H);
+  
+  ctx.fillStyle = '#ffcc00';
+  ctx.font = 'bold 60px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('🏆 VOCÊ VENCEU! 🏆', W/2, H/2 - 40);
+  
+  ctx.fillStyle = '#fff';
+  ctx.font = '28px monospace';
+  ctx.fillText(`Pontuação Final: ${score}`, W/2, H/2 + 20);
+  ctx.fillText('Você completou todas as 10 fases!', W/2, H/2 + 60);
+  
+  ctx.fillStyle = '#ffcc00';
+  ctx.font = '20px monospace';
+  const blink = Math.floor(Date.now() / 500) % 2;
+  if (blink) ctx.fillText('PRESSIONE ENTER PARA JOGAR NOVAMENTE', W/2, H/2 + 120);
+}
+
+function drawLevelComplete() {
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  ctx.fillRect(0, 0, W, H);
+  
+  ctx.fillStyle = '#00ff00';
+  ctx.font = 'bold 50px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(`FASE ${currentLevel+1} COMPLETA!`, W/2, H/2 - 40);
+  
+  ctx.fillStyle = '#fff';
+  ctx.font = '24px monospace';
+  ctx.fillText(`Bônus de tempo: +${time * 10}`, W/2, H/2 + 10);
+  ctx.fillText(`Pontuação: ${score}`, W/2, H/2 + 40);
+  
+  ctx.fillStyle = '#ffcc00';
+  ctx.font = '20px monospace';
+  const blink = Math.floor(Date.now() / 500) % 2;
+  if (blink) {
+    if (currentLevel < levelData.length - 1) {
+      ctx.fillText('PRESSIONE ENTER PARA PRÓXIMA FASE', W/2, H/2 + 90);
+    } else {
+      ctx.fillText('PRESSIONE ENTER PARA VER RESULTADO', W/2, H/2 + 90);
+    }
+  }
+}
+
+// ============ CONTROLE DE JOGO ============
+function startGame() {
+  gameState = 'playing';
+  currentLevel = 0;
+  score = 0;
+  lives = 3;
+  coins = 0;
+  loadLevel(0);
+}
+
+function resetGame() {
+  gameState = 'menu';
+  currentLevel = 0;
+  score = 0;
+  lives = 3;
+  coins = 0;
+}
+
+function nextLevel() {
+  currentLevel++;
+  if (currentLevel >= levelData.length) {
+    gameState = 'win';
+  } else {
+    loadLevel(currentLevel);
+    gameState = 'playing';
+  }
+}
+
+// ============ GAME LOOP ============
+function gameLoop(timestamp) {
+  const dt = Math.min((timestamp - lastTime) / 1000, 0.05);
+  lastTime = timestamp;
+  
+  update(dt);
+  draw();
+  
+  requestAnimationFrame(gameLoop);
+}
+
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>
